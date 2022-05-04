@@ -21,6 +21,11 @@ ConstantBuffer<RayGenConstantBuffer> g_rayGenCB : register(b0);
 typedef BuiltInTriangleIntersectionAttributes MyAttributes;
 struct RayPayload
 {
+    // Causing lib_6_6 shader compiled with IDxcCompiler to fail on PSO generation
+    // Error may look like:
+    // Exception thrown at 0x00007FF825C556E5 (nvwgf2umx.dll) in D3D12RaytracingHelloWorld.exe: 0xC0000005: Access violation reading location 0xFFFFFFFFFFFFFFE8.
+    uint   dummy;
+
     float4 color;
 };
 
@@ -53,7 +58,8 @@ void MyRaygenShader()
         // TMin should be kept small to prevent missing geometry at close contact areas.
         ray.TMin = 0.001;
         ray.TMax = 10000.0;
-        RayPayload payload = { float4(0, 0, 0, 0) };
+        // RayPayload payload = { 0, float4(0, 0, 0, 0) };
+        RayPayload payload = (RayPayload)0;
         TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, ~0, 0, 1, 0, ray, payload);
 
         // Write the raytraced color to the output texture.

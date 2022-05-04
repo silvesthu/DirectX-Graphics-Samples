@@ -14,6 +14,8 @@
 #include "DirectXRaytracingHelper.h"
 #include "CompiledShaders\Raytracing.hlsl.h"
 
+#include <dxcapi.h>
+
 using namespace std;
 using namespace DX;
 
@@ -172,6 +174,71 @@ void D3D12RaytracingHelloWorld::CreateRaytracingPipelineStateObject()
     // Since shaders are not considered a subobject, they need to be passed in via DXIL library subobjects.
     auto lib = raytracingPipeline.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
     D3D12_SHADER_BYTECODE libdxil = CD3DX12_SHADER_BYTECODE((void *)g_pRaytracing, ARRAYSIZE(g_pRaytracing));
+
+    CComPtr<IDxcBlob> code;
+    bool use_api_to_compile = true;
+    if (use_api_to_compile)
+    {
+        // Based on https://asawicki.info/news_1719_two_shader_compilers_of_direct3d_12
+
+        DxcCreateInstanceProc DxcCreateInstance = nullptr;
+        if (DxcCreateInstance == nullptr)
+        {
+            HMODULE dll = LoadLibraryW(L"dxcompiler.dll");
+            assert(dll != nullptr);
+            DxcCreateInstance = reinterpret_cast<DxcCreateInstanceProc>(GetProcAddress(dll, "DxcCreateInstance"));
+        }
+
+        CComPtr<IDxcLibrary> library;
+        HRESULT hr = DxcCreateInstance(CLSID_DxcLibrary, IID_PPV_ARGS(&library));
+        //if(FAILED(hr)) Handle error...
+
+        CComPtr<IDxcCompiler> compiler;
+        hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler));
+        //if(FAILED(hr)) Handle error...
+
+        uint32_t codePage = CP_UTF8;
+        CComPtr<IDxcBlobEncoding> sourceBlob;
+        hr = library->CreateBlobFromFile(L"Raytracing.hlsl", &codePage, &sourceBlob);
+        //if(FAILED(hr)) Handle file loading error...
+
+        // See https://simoncoenen.com/blog/programming/graphics/DxcRevised.html
+        ComPtr<IDxcUtils> utils;
+        DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(utils.GetAddressOf()));
+        ComPtr<IDxcIncludeHandler> include_handler;
+        utils->CreateDefaultIncludeHandler(include_handler.GetAddressOf());
+
+        CComPtr<IDxcOperationResult> result;
+        hr = compiler->Compile(
+            sourceBlob, // pSource
+            L"Raytracing.hlsl", // pSourceName
+            NULL, // pEntryPoint
+            L"lib_6_6", // pTargetProfile
+            NULL, 0, // pArguments, argCount
+            NULL, 0, // pDefines, defineCount
+            include_handler.Get(), // pIncludeHandler
+            &result); // ppResult
+        if (SUCCEEDED(hr))
+            result->GetStatus(&hr);
+        if (FAILED(hr))
+        {
+            if (result)
+            {
+                CComPtr<IDxcBlobEncoding> errorsBlob;
+                hr = result->GetErrorBuffer(&errorsBlob);
+                if (SUCCEEDED(hr) && errorsBlob)
+                {
+                    OutputDebugStringA((const char*)errorsBlob->GetBufferPointer());
+                }
+            }
+            // Handle compilation error...
+        }
+        result->GetResult(&code);
+
+        libdxil.BytecodeLength = code->GetBufferSize();
+        libdxil.pShaderBytecode = code->GetBufferPointer();
+    }
+
     lib->SetDXILLibrary(&libdxil);
     // Define which shader exports to surface from the library.
     // If no shader exports are defined for a DXIL library subobject, all shaders will be surfaced.
@@ -193,7 +260,9 @@ void D3D12RaytracingHelloWorld::CreateRaytracingPipelineStateObject()
     // Shader config
     // Defines the maximum sizes in bytes for the ray payload and attribute structure.
     auto shaderConfig = raytracingPipeline.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
-    UINT payloadSize = 4 * sizeof(float);   // float4 color
+    // UINT payloadSize = 4 * sizeof(float);   // float4 color
+    // UINT payloadSize = 1 * sizeof(unsigned int) + 4 * sizeof(float);   // uint dummy + float4 color
+    UINT payloadSize = 64 * sizeof(float);   // should be enough...
     UINT attributeSize = 2 * sizeof(float); // float2 barycentrics
     shaderConfig->Config(payloadSize, attributeSize);
 
@@ -337,7 +406,7 @@ void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
 
     // Allocate resources for acceleration structures.
     // Acceleration structures can only be placed in resources that are created in the default heap (or custom heap equivalent). 
-    // Default heap is OK since the application doesn’t need CPU read/write access to them. 
+    // Default heap is OK since the application doesnâ€™t need CPU read/write access to them. 
     // The resources that will contain acceleration structures must be created in the state D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, 
     // and must have resource flag D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS. The ALLOW_UNORDERED_ACCESS requirement simply acknowledges both: 
     //  - the system will be doing this type of access in its implementation of acceleration structure builds behind the scenes.
